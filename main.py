@@ -11,8 +11,8 @@ from telegram.ext import (
 # =====================
 # CONFIGURACIÓN
 # =====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN no definido")
@@ -25,23 +25,21 @@ HEADERS = {
 }
 
 # =====================
-# TECLADO REUTILIZABLE
-# =====================
-def main_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚽ Partidos de hoy", callback_data="today")]
-    ])
-
-# =====================
 # COMANDOS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("⚽ Partidos de hoy", callback_data="today")]
+    ]
     await update.message.reply_text(
         "🤖 Bot de fútbol activo",
-        reply_markup=main_keyboard()
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =====================
+# CALLBACKS
+# =====================
+async def partidos_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
@@ -50,8 +48,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if response.status_code != 200:
         await query.edit_message_text(
-            "❌ Error consultando la API",
-            reply_markup=main_keyboard()
+            "❌ Error consultando la API"
         )
         return
 
@@ -59,21 +56,22 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matches = data.get("matches", [])
 
     if not matches:
-        await query.edit_message_text(
-            "No hay partidos hoy.",
-            reply_markup=main_keyboard()
-        )
-        return
+        texto = "📭 No hay partidos hoy."
+    else:
+        texto = "⚽ Partidos de hoy:\n\n"
+        for m in matches[:10]:
+            home = m["homeTeam"]["name"]
+            away = m["awayTeam"]["name"]
+            texto += f"{home} vs {away}\n"
 
-    text = "⚽ Partidos de hoy:\n\n"
-    for m in matches[:5]:
-        home = m["homeTeam"]["name"]
-        away = m["awayTeam"]["name"]
-        text += f"{home} vs {away}\n"
+    # 🔁 VOLVER A MOSTRAR EL BOTÓN
+    keyboard = [
+        [InlineKeyboardButton("⚽ Partidos de hoy", callback_data="today")]
+    ]
 
     await query.edit_message_text(
-        text,
-        reply_markup=main_keyboard()
+        texto,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # =====================
@@ -83,8 +81,9 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(today, pattern="today"))
+    app.add_handler(CallbackQueryHandler(partidos_hoy, pattern="today"))
 
+    print("Bot iniciado correctamente")
     app.run_polling()
 
 if __name__ == "__main__":
