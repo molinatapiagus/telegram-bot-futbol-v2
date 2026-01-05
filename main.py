@@ -25,15 +25,20 @@ HEADERS = {
 }
 
 # =====================
+# TECLADO REUTILIZABLE
+# =====================
+def main_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚽ Partidos de hoy", callback_data="today")]
+    ])
+
+# =====================
 # COMANDOS
 # =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("⚽ Partidos de hoy", callback_data="today")]
-    ]
     await update.message.reply_text(
         "🤖 Bot de fútbol activo",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=main_keyboard()
     )
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -44,14 +49,20 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = requests.get(url, headers=HEADERS)
 
     if response.status_code != 200:
-        await query.edit_message_text("❌ Error consultando la API")
+        await query.edit_message_text(
+            "❌ Error consultando la API",
+            reply_markup=main_keyboard()
+        )
         return
 
     data = response.json()
     matches = data.get("matches", [])
 
     if not matches:
-        await query.edit_message_text("No hay partidos hoy.")
+        await query.edit_message_text(
+            "No hay partidos hoy.",
+            reply_markup=main_keyboard()
+        )
         return
 
     text = "⚽ Partidos de hoy:\n\n"
@@ -60,7 +71,10 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         away = m["awayTeam"]["name"]
         text += f"{home} vs {away}\n"
 
-    await query.edit_message_text(text)
+    await query.edit_message_text(
+        text,
+        reply_markup=main_keyboard()
+    )
 
 # =====================
 # MAIN
