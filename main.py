@@ -1,30 +1,25 @@
 import os
-import json
 import requests
-import asyncio
-from flask import Flask, request
-
 from telegram import (
     Update,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    InlineKeyboardMarkup
 )
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes,
+    ContextTypes
 )
 
-# =========================
+# ==============================
 # CONFIGURACIÓN
-# =========================
+# ==============================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-if not BOT_TOKEN or not FOOTBALL_API_KEY or not WEBHOOK_URL:
+if not BOT_TOKEN or not FOOTBALL_API_KEY:
     raise RuntimeError("Faltan variables de entorno")
 
 API_BASE = "https://api-football-v1.p.rapidapi.com/v3"
@@ -33,57 +28,45 @@ HEADERS = {
     "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com",
 }
 
-# =========================
-# TELEGRAM APP
-# =========================
-
-telegram_app = Application.builder().token(BOT_TOKEN).build()
-
-# =========================
-# FLASK APP
-# =========================
-
-flask_app = Flask(__name__)
-
-# =========================
-# TECLADO
-# =========================
+# ==============================
+# TECLADO PRINCIPAL
+# ==============================
 
 def teclado_principal():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📊 Pedir estadísticas", callback_data="stats")]]
-    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Pedir estadísticas", callback_data="stats")]
+    ])
 
-# =========================
-# COMANDOS
-# =========================
+# ==============================
+# /start
+# ==============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚽ *Bot de análisis estadístico de fútbol*\n\n"
         "Pulsa el botón para analizar los partidos del día.",
-        parse_mode="Markdown",
         reply_markup=teclado_principal(),
+        parse_mode="Markdown"
     )
 
-# =========================
-# API FOOTBALL
-# =========================
+# ==============================
+# OBTENER PARTIDOS DE HOY
+# ==============================
 
 def obtener_partidos_hoy():
     url = f"{API_BASE}/fixtures"
-    params = {"date": request_date()}
-    r = requests.get(url, headers=HEADERS, params=params, timeout=15)
-    data = r.json()
+    params = {"date": ""}
+    response = requests.get(url, headers=HEADERS, params=params, timeout=20)
+
+    if response.status_code != 200:
+        return []
+
+    data = response.json()
     return data.get("response", [])
 
-def request_date():
-    from datetime import datetime
-    return datetime.utcnow().strftime("%Y-%m-%d")
-
-# =========================
-# CALLBACK
-# =========================
+# ==============================
+# BOTÓN ESTADÍSTICAS
+# ==============================
 
 async def pedir_estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -92,54 +75,33 @@ async def pedir_estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE)
     partidos = obtener_partidos_hoy()
 
     if not partidos:
-        await query.edit_message_text(
-            "❌ Hoy no hay partidos disponibles.\nInténtalo más tarde.",
+        await query.message.reply_text(
+            "❌ *Hoy no hay partidos disponibles.*\n"
+            "Inténtalo más tarde.",
             reply_markup=teclado_principal(),
+            parse_mode="Markdown"
         )
         return
 
-    mensaje = "📊 *Partidos disponibles hoy:*\n\n"
-
-    for p in partidos[:5]:
-        local = p["teams"]["home"]["name"]
-        visita = p["teams"]["away"]["name"]
-        mensaje += f"• {local} vs {visita}\n"
-
-    mensaje += "\n🔎 *Próximamente:* análisis Over/Under y Ambos Marcan."
-
-    await query.edit_message_text(
-        mensaje,
-        parse_mode="Markdown",
+    await query.message.reply_text(
+        "📊 *Partidos encontrados*\n\n"
+        "⚠️ Análisis avanzado en desarrollo.",
         reply_markup=teclado_principal(),
+        parse_mode="Markdown"
     )
 
-# =========================
-# REGISTRO HANDLERS
-# =========================
+# ==============================
+# MAIN
+# ==============================
 
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CallbackQueryHandler(pedir_estadisticas, pattern="^stats$"))
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
 
-# =========================
-# WEBHOOK ENDPOINT
-# =========================
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(pedir_estadisticas, pattern="^stats$"))
 
-@flask_app.route("/webhook", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
-    return "OK", 200
-
-# =========================
-# INICIO
-# =========================
-
-async def iniciar():
-    await telegram_app.initialize()
-    await telegram_app.bot.set_webhook(WEBHOOK_URL)
-
-asyncio.run(iniciar())
+    print("🤖 Bot iniciado correctamente")
+    app.run_polling()
 
 if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
+    main()
