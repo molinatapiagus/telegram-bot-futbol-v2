@@ -1,20 +1,11 @@
 import os
 import requests
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# =====================
+# ======================
 # CONFIGURACIÓN
-# =====================
+# ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
@@ -31,96 +22,107 @@ HEADERS = {
 
 API_BASE = "https://api-football-v1.p.rapidapi.com/v3"
 
-# =====================
+# ======================
+# TECLADO (SIEMPRE)
+# ======================
+def keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Pedir estadísticas", callback_data="stats")]
+    ])
+
+# ======================
 # /start
-# =====================
+# ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("⚽ Pedir estadísticas", callback_data="stats")]
-    ]
     await update.message.reply_text(
-        "🤖 Bot de fútbol activo\n\nPulsa el botón para analizar partidos de hoy.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "⚽ Bot de fútbol activo\n\nPulsa el botón para analizar partidos de hoy.",
+        reply_markup=keyboard()
     )
 
-# =====================
-# CALLBACK
-# =====================
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ======================
+# CALLBACK PRINCIPAL
+# ======================
+async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "stats":
-        await analizar_partidos(query)
+    url = f"{API_BASE}/fixtures"
+    params = {"date": "today"}
 
-# =====================
-# LÓGICA PRINCIPAL
-# =====================
-async def analizar_partidos(query):
     try:
-        url = f"{API_BASE}/fixtures"
-        params = {"date": query.message.date.strftime("%Y-%m-%d")}
-
-        r = requests.get(url, headers=HEADERS, params=params, timeout=15)
-        data = r.json()
-
-        if not data.get("response"):
-            await query.edit_message_text(
-                "❌ No hay partidos disponibles hoy.\n\nVuelve más tarde."
-            )
-            return
-
-        fixture = data["response"][0]
-        fixture_id = fixture["fixture"]["id"]
-        home = fixture["teams"]["home"]["name"]
-        away = fixture["teams"]["away"]["name"]
-
-        stats = obtener_estadisticas(fixture_id)
-
-        mensaje = (
-            f"📊 *Análisis del partido*\n"
-            f"{home} vs {away}\n\n"
-            f"🔢 Over 2.5: {stats['over']}%\n"
-            f"⚽ Ambos marcan: {stats['btts']}%\n\n"
-            f"✅ *Apuesta más probable:*\n"
-            f"{stats['recomendacion']}"
-        )
-
-        await query.edit_message_text(
-            mensaje,
-            parse_mode="Markdown"
-        )
-
+        response = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        data = response.json()
     except Exception:
-        await query.edit_message_text("❌ Error consultando la API")
+        await query.message.reply_text(
+            "❌ Error consultando la API.",
+            reply_markup=keyboard()
+        )
+        return
 
-# =====================
-# ESTADÍSTICAS (SIMPLIFICADAS Y REALES)
-# =====================
-def obtener_estadisticas(fixture_id):
-    # Aquí luego refinamos con histórico real
-    over = 68
-    btts = 61
+    fixtures = data.get("response", [])
 
-    if over > btts:
-        recomendacion = "Over 2.5 goles"
+    if not fixtures:
+        await query.message.reply_text(
+            "❌ No hay partidos disponibles hoy.\n\nVuelve más tarde.",
+            reply_markup=keyboard()  # 🔴 AQUÍ ESTABA EL ERROR
+        )
+        return
+
+    # Tomamos SOLO el primer partido (para no sobrecargar)
+    match = fixtures[0]
+    home = match["teams"]["home"]["name"]
+    away = match["teams"]["away"]["name"]
+    fixture_id = match["fixture"]["id"]
+
+    stats_url = f"{API_BASE}/predictions"
+    stats_params = {"fixture": fixture_id}
+
+    stats_response = requests.get(stats_url, headers=HEADERS, params=stats_params).json()
+    predictions = stats_response.get("response", [])
+
+    if not predictions:
+        await query.message.reply_text(
+            f"📊 {home} vs {away}\n\nNo hay estadísticas suficientes.",
+            reply_markup=keyboard()
+        )
+        return
+
+    pred = predictions[0]["predictions"]
+
+    over = pred["under_over"]
+    btts = pred["both_teams_to_score"]
+
+    mensaje = (
+        f"📊 *Análisis del partido*\n\n"
+        f"⚽ {home} vs {away}\n\n"
+        f"📈 Over / Under 2.5: *{over}*\n"
+        f"🔁 Ambos marcan: *{btts}*\n\n"
+        f"✅ *Apuesta más probable:* "
+    )
+
+    if "Over" in over and "Yes" in btts:
+        mensaje += "Over 2.5 + Ambos marcan"
+    elif "Over" in over:
+        mensaje += "Over 2.5"
+    elif "Yes" in btts:
+        mensaje += "Ambos marcan"
     else:
-        recomendacion = "Ambos marcan (Sí)"
+        mensaje += "No apostar (riesgo alto)"
 
-    return {
-        "over": over,
-        "btts": btts,
-        "recomendacion": recomendacion
-    }
+    await query.message.reply_text(
+        mensaje,
+        reply_markup=keyboard(),
+        parse_mode="Markdown"
+    )
 
-# =====================
+# ======================
 # MAIN
-# =====================
+# ======================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(CallbackQueryHandler(stats_callback, pattern="^stats$"))
 
     print("🤖 Bot iniciado correctamente")
     app.run_polling()
