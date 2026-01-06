@@ -1,86 +1,118 @@
 import os
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# =====================
-# CONFIGURACIÓN
-# =====================
+# ======================
+# CONFIGURACIÓN GENERAL
+# ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN no definido")
-
-if not FOOTBALL_API_KEY:
-    raise RuntimeError("FOOTBALL_API_KEY no definido")
-
-HEADERS = {
-    "X-RapidAPI-Key": FOOTBALL_API_KEY,
-    "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
-}
+if not BOT_TOKEN or not FOOTBALL_API_KEY:
+    raise RuntimeError("Faltan variables de entorno")
 
 API_BASE = "https://api-football-v1.p.rapidapi.com/v3"
+HEADERS = {
+    "X-RapidAPI-Key": FOOTBALL_API_KEY,
+    "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com",
+}
 
-# =====================
-# BOTÓN PRINCIPAL
-# =====================
-def main_keyboard():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📊 Pedir estadísticas", callback_data="stats")]]
-    )
+# ======================
+# TECLADO PRINCIPAL
+# ======================
+def teclado_principal():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Pedir estadísticas", callback_data="stats")]
+    ])
 
-# =====================
-# /start
-# =====================
+# ======================
+# COMANDO /start
+# ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Bot de fútbol activo\n\nPulsa el botón para analizar partidos de hoy.",
-        reply_markup=main_keyboard()
+        "⚽ Bot de análisis estadístico de fútbol\n\n"
+        "Pulsa el botón para analizar los partidos del día.",
+        reply_markup=teclado_principal()
     )
 
-# =====================
-# OBTENER PARTIDOS DE HOY
-# =====================
+# ======================
+# OBTENER PARTIDOS DEL DÍA
+# ======================
 def obtener_partidos_hoy():
     url = f"{API_BASE}/fixtures"
     params = {"date": "today"}
-
-    response = requests.get(url, headers=HEADERS, params=params, timeout=15)
-
-    if response.status_code != 200:
-        return []
-
-    data = response.json()
+    r = requests.get(url, headers=HEADERS, params=params, timeout=15)
+    data = r.json()
     return data.get("response", [])
 
-# =====================
-# CALCULAR PROBABILIDADES SIMPLES
-# =====================
-def analizar_partido(fixture):
-    stats_home = fixture["teams"]["home"]["winner"]
-    stats_away = fixture["teams"]["away"]["winner"]
+# ======================
+# OBTENER ESTADÍSTICAS DE EQUIPO
+# ======================
+def obtener_estadisticas_equipo(team_id, league_id, season):
+    url = f"{API_BASE}/teams/statistics"
+    params = {
+        "team": team_id,
+        "league": league_id,
+        "season": season
+    }
+    r = requests.get(url, headers=HEADERS, params=params, timeout=15)
+    return r.json().get("response", {})
 
-    # Modelo sencillo y honesto (fase 1)
-    over25 = 55
-    ambos_marcan = 60
+# ======================
+# CÁLCULO DE PROBABILIDADES REALES
+# ======================
+def calcular_probabilidades(fixture):
+    league_id = fixture["league"]["id"]
+    season = fixture["league"]["season"]
 
-    if stats_home and stats_away:
+    home_id = fixture["teams"]["home"]["id"]
+    away_id = fixture["teams"]["away"]["id"]
+
+    home_stats = obtener_estadisticas_equipo(home_id, league_id, season)
+    away_stats = obtener_estadisticas_equipo(away_id, league_id, season)
+
+    # PROMEDIOS DE GOLES
+    home_goals_for = float(home_stats["goals"]["for"]["average"]["total"])
+    home_goals_against = float(home_stats["goals"]["against"]["average"]["total"])
+
+    away_goals_for = float(away_stats["goals"]["for"]["average"]["total"])
+    away_goals_against = float(away_stats["goals"]["against"]["average"]["total"])
+
+    # ---- MÁS DE 2.5 GOLES ----
+    media_total = (
+        home_goals_for +
+        home_goals_against +
+        away_goals_for +
+        away_goals_against
+    ) / 2
+
+    if media_total >= 3.0:
+        mas_25 = 75
+    elif media_total >= 2.5:
+        mas_25 = 65
+    else:
+        mas_25 = 50
+
+    # ---- AMBOS EQUIPOS MARCAN ----
+    ambos_marcan = 0
+    if home_goals_for >= 1 and away_goals_for >= 1:
+        ambos_marcan += 30
+    if home_goals_against >= 1 and away_goals_against >= 1:
+        ambos_marcan += 30
+    if home_goals_for >= 1.5 or away_goals_for >= 1.5:
         ambos_marcan += 10
 
+    ambos_marcan = min(ambos_marcan, 80)
+
     return {
-        "over25": min(over25, 75),
-        "ambos": min(ambos_marcan, 80)
+        "mas_25": mas_25,
+        "ambos": ambos_marcan
     }
 
-# =====================
+# ======================
 # CALLBACK DEL BOTÓN
-# =====================
+# ======================
 async def pedir_estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -88,47 +120,64 @@ async def pedir_estadisticas(update: Update, context: ContextTypes.DEFAULT_TYPE)
     partidos = obtener_partidos_hoy()
 
     if not partidos:
-        await query.edit_message_text(
-            "❌ No hay partidos disponibles hoy.\nInténtalo más tarde.",
-            reply_markup=main_keyboard()
+        await query.message.reply_text(
+            "❌ Hoy no hay partidos disponibles.\nInténtalo más tarde.",
+            reply_markup=teclado_principal()
         )
         return
 
-    partido = partidos[0]
+    mejor_apuesta = None
+    mejor_prob = 0
+    mejor_partido = None
 
-    home = partido["teams"]["home"]["name"]
-    away = partido["teams"]["away"]["name"]
+    for fixture in partidos:
+        try:
+            probs = calcular_probabilidades(fixture)
+        except Exception:
+            continue
 
-    probs = analizar_partido(partido)
+        if probs["ambos"] > mejor_prob and probs["ambos"] >= 65:
+            mejor_prob = probs["ambos"]
+            mejor_apuesta = "Ambos equipos marcan – SÍ"
+            mejor_partido = fixture
 
-    if probs["ambos"] >= probs["over25"]:
-        apuesta = f"👉 Ambos marcan – SÍ ({probs['ambos']}%)"
-    else:
-        apuesta = f"👉 Over 2.5 goles ({probs['over25']}%)"
+        if probs["mas_25"] > mejor_prob and probs["mas_25"] >= 65:
+            mejor_prob = probs["mas_25"]
+            mejor_apuesta = "Más de 2.5 goles"
+            mejor_partido = fixture
+
+    if not mejor_apuesta:
+        await query.message.reply_text(
+            "❌ Hoy no hay partidos con estadísticas suficientemente confiables.",
+            reply_markup=teclado_principal()
+        )
+        return
+
+    home = mejor_partido["teams"]["home"]["name"]
+    away = mejor_partido["teams"]["away"]["name"]
 
     mensaje = (
-        f"⚽ Partido: {home} vs {away}\n\n"
-        f"📊 Análisis estadístico:\n"
-        f"• Over 2.5: {probs['over25']}%\n"
-        f"• Ambos marcan: {probs['ambos']}%\n\n"
-        f"✅ Apuesta con mayor probabilidad:\n"
-        f"{apuesta}"
+        "⚽ ANÁLISIS ESTADÍSTICO DEL DÍA\n\n"
+        f"🏟 Partido: {home} vs {away}\n\n"
+        "📊 Apuesta con mayor probabilidad:\n"
+        f"👉 {mejor_apuesta}\n\n"
+        f"📈 Probabilidad estimada: {mejor_prob} %\n\n"
+        "🧠 Basado en estadísticas reales.\n"
+        "⚠️ Análisis informativo."
     )
 
-    await query.edit_message_text(
+    await query.message.reply_text(
         mensaje,
-        reply_markup=main_keyboard()
+        reply_markup=teclado_principal()
     )
 
-# =====================
+# ======================
 # MAIN
-# =====================
+# ======================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(pedir_estadisticas, pattern="stats"))
-
     print("🤖 Bot iniciado correctamente")
     app.run_polling()
 
