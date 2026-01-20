@@ -1,4 +1,5 @@
 import os
+import logging
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -7,13 +8,18 @@ from telegram.ext import (
 )
 
 # ===============================
-# CONFIGURACIÓN BASE (ESTABLE)
+# CONFIGURACIÓN BASE (NO TOCAR)
 # ===============================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN no está definido en las variables de entorno")
+    raise RuntimeError("❌ BOT_TOKEN no definido en las variables de entorno")
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 
 # ===============================
 # HANDLERS
@@ -21,7 +27,9 @@ if not BOT_TOKEN:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Bot activo y estable.\nEste es el punto base. No se toca."
+        "✅ Bot activo y estable.\n\n"
+        "Este es el punto base.\n"
+        "No se toca."
     )
 
 # ===============================
@@ -38,4 +46,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
