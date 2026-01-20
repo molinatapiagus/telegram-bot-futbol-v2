@@ -21,9 +21,7 @@ if not BOT_TOKEN:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Bot activo y estable.\n"
-        "Este es el punto base del proyecto.\n"
-        "NO SE TOCA."
+        "✅ Bot activo y estable.\nEste es el punto base. No se toca."
     )
 
 # ===============================
@@ -35,9 +33,9 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
 
-    print("🤖 Bot iniciado correctamente (polling puro)")
-
+    print("🤖 Bot iniciado correctamente (polling)")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
+
