@@ -1,19 +1,20 @@
 import os
+import asyncio
 from telegram import Update
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     ContextTypes,
 )
 
 # =========================
-# CONFIGURACIÓN BASE
+# CONFIGURACIÓN BASE ESTABLE
 # =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN no está definido")
+    raise RuntimeError("❌ BOT_TOKEN no está definido en las variables de entorno")
 
 # =========================
 # HANDLERS
@@ -21,20 +22,27 @@ if not BOT_TOKEN:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Bot activo y estable.\nEste es el punto base. No se toca."
+        "✅ Bot activo y estable.\n"
+        "Sistema limpio.\n"
+        "Modo: polling puro.\n"
+        "Arquitectura base protegida."
     )
 
 # =========================
-# MAIN (ÚNICO ENTRY POINT)
+# SISTEMA PRINCIPAL
 # =========================
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
 
-    print("🤖 Bot iniciado en modo polling (estable)")
-    app.run_polling()
+    print("🤖 Bot iniciado en modo polling puro...")
+
+    await app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
