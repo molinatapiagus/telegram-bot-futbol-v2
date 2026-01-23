@@ -1,65 +1,69 @@
 import os
-import asyncio
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes,
+    ContextTypes
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 
-# =========================
-# TECLADO
-# =========================
-def teclado():
+# ===============================
+# /start
+# ===============================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     keyboard = [
         [InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]
     ]
-    return InlineKeyboardMarkup(keyboard)
 
-
-# =========================
-# /start
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔴 BORRA cualquier teclado viejo persistente
     await update.message.reply_text(
-        "🤖 Bot activo y estable\n\nPulsa el botón para pedir análisis.",
-        reply_markup=teclado()
+        "🤖 Bot activo y estable\n\nPulsa el botón para pedir análisis:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    # ✅ SOLO inline button (correcto)
+    await update.message.reply_text(
+        "Selecciona una opción:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# =========================
-# BOTÓN VIP
-# =========================
+# ===============================
+# Botón VIP
+# ===============================
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    mensaje = (
-        "🔥 ANÁLISIS VIP\n\n"
-        "⚽ Pronóstico: Más de 2.5 goles\n"
-        "📊 Probabilidad: 72%\n"
-        "📌 Fundamentación: Alta presión ofensiva y defensas débiles\n\n"
-        "Pulsa nuevamente para otro análisis 👇"
+    await query.message.reply_text(
+        "📊 Análisis VIP generado correctamente\n\n( aquí luego conectamos tu lógica real )"
     )
 
-    await query.message.reply_text(mensaje, reply_markup=teclado())
 
-
-# =========================
-# MAIN
-# =========================
+# ===============================
+# MAIN (polling puro estable)
+# ===============================
 def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(vip))
+    app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
 
-    print("Bot iniciado en polling estable")
-    app.run_polling(drop_pending_updates=True)
+    print("Bot iniciado en polling puro (estable)")
+
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"]
+    )
 
 
 if __name__ == "__main__":
