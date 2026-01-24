@@ -1,10 +1,8 @@
 import os
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardRemove
-)
+from datetime import datetime
+import pytz
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,58 +10,90 @@ from telegram.ext import (
     ContextTypes
 )
 
-TOKEN = os.getenv("BOT_TOKEN")
+# =========================================
+# CONFIGURACIÓN
+# =========================================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+ZONA_CO = pytz.timezone("America/Bogota")
 
 
-# ===============================
-# /start
-# ===============================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================
+# LÓGICA VIP (SOLO FUNCIONES, NO ARQUITECTURA)
+# =========================================
 
-    keyboard = [
-        [InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]
+def generar_analisis():
+    ahora = datetime.now(ZONA_CO).strftime("%d/%m/%Y %I:%M %p")
+
+    opciones = [
+        ("Más de 2.5 goles", "72%", "Alta presión ofensiva y defensas vulnerables."),
+        ("Menos de 2.5 goles", "68%", "Partido cerrado y ritmo conservador."),
+        ("Gol en primer tiempo", "75%", "Inicio intenso con llegadas tempranas.")
     ]
 
-    # 🔴 BORRA cualquier teclado viejo persistente
+    mercado, prob, fundamento = max(
+        opciones,
+        key=lambda x: int(x[1].replace("%", ""))
+    )
+
+    return f"""
+🔥 <b>ANÁLISIS VIP DE FÚTBOL</b>
+
+🕒 Hora (Colombia): {ahora}
+
+⚽ Pronóstico:
+👉 <b>{mercado}</b>
+
+📊 Probabilidad estimada: <b>{prob}</b>
+
+📌 Fundamentación:
+{fundamento}
+"""
+
+
+# =========================================
+# HANDLERS
+# =========================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
         "🤖 Bot activo y estable\n\nPulsa el botón para pedir análisis:",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    # ✅ SOLO inline button (correcto)
-    await update.message.reply_text(
-        "Selecciona una opción:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=reply_markup
     )
 
 
-# ===============================
-# Botón VIP
-# ===============================
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    texto = generar_analisis()
+
+    keyboard = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await query.message.reply_text(
-        "📊 Análisis VIP generado correctamente\n\n( aquí luego conectamos tu lógica real )"
+        texto,
+        parse_mode="HTML",
+        reply_markup=reply_markup
     )
 
 
-# ===============================
-# MAIN (polling puro estable)
-# ===============================
+# =========================================
+# MAIN (ARQUITECTURA ESTABLE)
+# =========================================
+
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
 
     print("Bot iniciado en polling puro (estable)")
-
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"]
-    )
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
