@@ -1,37 +1,22 @@
 import os
 import time
-import threading
 import requests
-from flask import Flask
 from datetime import datetime
 import pytz
 
 # ===============================
-# VARIABLES
+# VARIABLES (Render ENV)
 # ===============================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 ZONA_CO = pytz.timezone("America/Bogota")
 
-# ===============================
-# FLASK (solo keep-alive Render)
-# ===============================
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot activo 24/7"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
 
 # ===============================
 # TELEGRAM HELPERS
 # ===============================
-def enviar(texto, botones=None):
+def enviar_mensaje(texto, botones=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     payload = {
@@ -54,7 +39,7 @@ def teclado_vip():
 
 
 # ===============================
-# GENERADOR VIP
+# GENERADOR ANÁLISIS (EL QUE YA FUNCIONABA)
 # ===============================
 def generar_analisis():
     ahora = datetime.now(ZONA_CO).strftime("%d/%m/%Y %I:%M %p")
@@ -80,7 +65,7 @@ Inicio intenso con llegadas tempranas.
 def iniciar_bot():
     offset = None
 
-    enviar(
+    enviar_mensaje(
         "🤖 <b>Bot activo y estable</b>\nPulsa el botón para pedir análisis.",
         teclado_vip()
     )
@@ -99,7 +84,7 @@ def iniciar_bot():
                     texto = update["message"].get("text", "")
 
                     if texto == "🔥 Pedir análisis VIP":
-                        enviar(generar_analisis(), teclado_vip())
+                        enviar_mensaje(generar_analisis(), teclado_vip())
 
         except Exception as e:
             print("Error:", e)
@@ -108,8 +93,8 @@ def iniciar_bot():
 
 
 # ===============================
-# MAIN CORRECTO (CRÍTICO)
+# MAIN (SIN FLASK, SIN HILOS)
 # ===============================
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
     iniciar_bot()
+
