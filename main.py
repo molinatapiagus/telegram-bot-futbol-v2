@@ -1,100 +1,174 @@
 import os
+import time
+import threading
+import requests
 from datetime import datetime
 import pytz
+from flask import Flask
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
-)
+# =====================================================
+# CONFIG
+# =====================================================
 
-# =========================================
-# CONFIGURACIÓN
-# =========================================
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
+BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 ZONA_CO = pytz.timezone("America/Bogota")
 
+# historial en memoria (NO rompe nada)
+HISTORIAL = []
 
-# =========================================
-# LÓGICA VIP (SOLO FUNCIONES, NO ARQUITECTURA)
-# =========================================
+# =====================================================
+# FLASK KEEP ALIVE
+# =====================================================
 
-def generar_analisis():
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot activo y estable"
+
+def run_flask():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
+# =====================================================
+# TELEGRAM HELPERS
+# =====================================================
+
+def enviar_mensaje(texto, botones=None):
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": texto,
+        "parse_mode": "HTML"
+    }
+
+    if botones:
+        payload["reply_markup"] = botones
+
+    requests.post(f"{BASE_URL}/sendMessage", json=payload)
+
+
+def teclado_principal():
+    return {
+        "inline_keyboard": [
+            [{"text": "🔥 Pedir análisis VIP", "callback_data": "VIP"}],
+            [{"text": "📊 Ver historial", "callback_data": "HIST"}]
+        ]
+    }
+
+
+# =====================================================
+# LÓGICA VIP (MISMA + historial)
+# =====================================================
+
+def generar_analisis_vip():
+
     ahora = datetime.now(ZONA_CO).strftime("%d/%m/%Y %I:%M %p")
 
     opciones = [
-        ("Más de 2.5 goles", "72%", "Alta presión ofensiva y defensas vulnerables."),
-        ("Menos de 2.5 goles", "68%", "Partido cerrado y ritmo conservador."),
-        ("Gol en primer tiempo", "75%", "Inicio intenso con llegadas tempranas.")
+        {"mercado": "Más de 2.5 goles", "prob": "72%", "fundamento": "Alta frecuencia ofensiva."},
+        {"mercado": "Menos de 2.5 goles", "prob": "68%", "fundamento": "Partidos cerrados."},
+        {"mercado": "Gol en primer tiempo", "prob": "75%", "fundamento": "Inicio intenso con llegadas tempranas."}
     ]
 
-    mercado, prob, fundamento = max(
-        opciones,
-        key=lambda x: int(x[1].replace("%", ""))
-    )
+    elegido = max(opciones, key=lambda x: int(x["prob"].replace("%","")))
 
-    return f"""
+    mensaje = f"""
 🔥 <b>ANÁLISIS VIP DE FÚTBOL</b>
 
-🕒 Hora (Colombia): {ahora}
+🕒 <b>Hora:</b> {ahora}
+⚽ <b>Pronóstico:</b> {elegido['mercado']}
+📊 <b>Probabilidad:</b> {elegido['prob']}
 
-⚽ Pronóstico:
-👉 <b>{mercado}</b>
-
-📊 Probabilidad estimada: <b>{prob}</b>
-
-📌 Fundamentación:
-{fundamento}
+📌 {elegido['fundamento']}
 """
 
+    # guardar historial (máx 5)
+    HISTORIAL.insert(0, mensaje)
+    if len(HISTORIAL) > 5:
+        HISTORIAL.pop()
 
-# =========================================
-# HANDLERS
-# =========================================
+    return mensaje
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        "🤖 Bot activo y estable\n\nPulsa el botón para pedir análisis:",
-        reply_markup=reply_markup
+def obtener_historial():
+    if not HISTORIAL:
+        return "Aún no hay análisis generados."
+
+    texto = "📊 <b>Últimos análisis:</b>\n\n"
+    for i, h in enumerate(HISTORIAL, 1):
+        texto += f"{i}. {h}\n\n"
+
+    return texto
+
+
+# =====================================================
+# POLLING LOOP
+# =====================================================
+
+def iniciar_bot():
+
+    enviar_mensaje(
+        "🤖 <b>Bot activo y estable</b>\n\nSelecciona una opción:",
+        teclado_principal()
     )
 
+    offset = None
 
-async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    while True:
+        try:
+            r = requests.get(
+                f"{BASE_URL}/getUpdates",
+                params={"timeout": 100, "offset": offset}
+            ).json()
 
-    texto = generar_analisis()
+            for update in r.get("result", []):
 
-    keyboard = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+                offset = update["update_id"] + 1
 
-    await query.message.reply_text(
-        texto,
-        parse_mode="HTML",
-        reply_markup=reply_markup
-    )
+                # --------------------------
+                # BOTONES
+                # --------------------------
+                if "callback_query" in update:
+                    data = update["callback_query"]["data"]
+
+                    if data == "VIP":
+                        enviar_mensaje(generar_analisis_vip(), teclado_principal())
+
+                    elif data == "HIST":
+                        enviar_mensaje(obtener_historial(), teclado_principal())
+
+                # --------------------------
+                # COMANDOS TEXTO
+                # --------------------------
+                if "message" in update:
+
+                    texto = update["message"].get("text", "")
+
+                    if texto == "/start":
+                        enviar_mensaje(
+                            "👋 Bienvenido\n\nPulsa un botón:",
+                            teclado_principal()
+                        )
+
+                    elif texto == "/ping":
+                        enviar_mensaje("✅ Bot online y estable")
+
+        except Exception as e:
+            print("Error:", e)
+
+        time.sleep(2)
 
 
-# =========================================
-# MAIN (ARQUITECTURA ESTABLE)
-# =========================================
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
-
-    print("Bot iniciado en polling puro (estable)")
-    app.run_polling(drop_pending_updates=True)
-
+# =====================================================
+# MAIN
+# =====================================================
 
 if __name__ == "__main__":
-    main()
+    threading.Thread(target=run_flask).start()
+    iniciar_bot() 
+
