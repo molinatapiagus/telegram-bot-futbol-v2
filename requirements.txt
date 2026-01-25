@@ -2,5 +2,6 @@ requests
 flask
 pytz
 python-telegram-bot==20.3
+Pillow
 
 
