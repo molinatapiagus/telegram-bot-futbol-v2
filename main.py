@@ -1,7 +1,7 @@
 import os
+import requests
 from datetime import datetime
 import pytz
-import requests
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -11,82 +11,165 @@ from telegram.ext import (
     ContextTypes
 )
 
-# =========================================
-# CONFIGURACIÓN (IGUAL QUE ANTES)
-# =========================================
+# ======================================================
+# CONFIGURACIÓN (NO TOCAR)
+# ======================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 
 ZONA_CO = pytz.timezone("America/Bogota")
 
+HEADERS = {
+    "x-apisports-key": API_KEY
+}
 
-# =========================================
-# SOLO LÓGICA (ÚNICO LUGAR MODIFICADO)
-# =========================================
+PRED_URL = "https://v3.football.api-sports.io/predictions"
+FIX_URL = "https://v3.football.api-sports.io/fixtures"
 
-def generar_analisis():
-    ahora = datetime.now(ZONA_CO).strftime("%d/%m/%Y %I:%M %p")
+
+# ======================================================
+# LIGAS IMPORTANTES
+# ======================================================
+
+LEAGUES = [
+    39, 140, 135, 78, 61,     # Europa top
+    2, 3,                     # Champions / Europa
+    13,                       # Libertadores
+    71, 128, 239,             # Brasil / Argentina / Colombia
+    253, 262,                 # MLS / Liga MX
+    1, 11, 32                 # Mundial + eliminatorias
+]
+
+
+# ======================================================
+# OBTENER PARTIDOS SOLO HOY (HORA COLOMBIA)
+# ======================================================
+
+def obtener_partidos_hoy():
+
+    hoy_col = datetime.now(ZONA_CO).strftime("%Y-%m-%d")
+
+    partidos = []
+
+    for league in LEAGUES:
+        try:
+            params = {
+                "league": league,
+                "date": hoy_col
+            }
+
+            r = requests.get(FIX_URL, headers=HEADERS, params=params, timeout=15)
+            data = r.json().get("response", [])
+
+            partidos.extend(data)
+
+        except:
+            pass
+
+    return partidos
+
+
+# ======================================================
+# OBTENER PREDICCIONES DE UN PARTIDO
+# ======================================================
+
+def obtener_prediccion(fixture_id):
 
     try:
-        url = "https://v3.football.api-sports.io/predictions"
+        r = requests.get(
+            PRED_URL,
+            headers=HEADERS,
+            params={"fixture": fixture_id},
+            timeout=15
+        )
 
-        headers = {
-            "x-apisports-key": API_KEY
-        }
+        return r.json().get("response", [])[0]
 
-        params = {
-            "league": 39,   # Premier League (puedes cambiar luego)
-            "season": 2026
-        }
+    except:
+        return None
 
-        r = requests.get(url, headers=headers, params=params, timeout=15)
-        data = r.json()
 
-        partidos = data.get("response", [])
+# ======================================================
+# LÓGICA PRINCIPAL (SOLO ESTA PARTE SE MODIFICA)
+# ======================================================
 
-        if not partidos:
-            return "No hay partidos disponibles hoy."
+def generar_analisis():
 
-        mejor = None
-        mejor_prob = 0
+    ahora = datetime.now(ZONA_CO).strftime("%d/%m/%Y %I:%M %p")
 
-        for p in partidos:
-            home = p["teams"]["home"]["name"]
-            away = p["teams"]["away"]["name"]
+    partidos = obtener_partidos_hoy()
 
-            porcentajes = p["predictions"]["percent"]
-
-            for mercado, valor in porcentajes.items():
-                prob = int(valor.replace("%", ""))
-
-                if prob > mejor_prob:
-                    mejor_prob = prob
-                    mejor = (home, away, mercado, valor)
-
-        home, away, mercado, valor = mejor
-
+    if not partidos:
         return f"""
-🔥 <b>ANÁLISIS VIP – FÚTBOL</b>
+⚠️ No hay partidos disponibles hoy
+🕒 Hora Colombia: {ahora}
 
-🏆 Partido: {home} vs {away}
-🕒 Hora (Colombia): {ahora}
-
-📊 Mercado con mayor probabilidad:
-👉 <b>{mercado}</b>
-
-📈 Probabilidad estimada: <b>{valor}</b>
-
-Datos obtenidos desde API oficial.
+Intenta más tarde.
 """
 
-    except Exception:
-        return "Error consultando la API. Intenta nuevamente."
+    analisis = []
+
+    for p in partidos:
+        pred = obtener_prediccion(p["fixture"]["id"])
+
+        if not pred:
+            continue
+
+        try:
+            home = pred["predictions"]["percent"]["home"]
+            draw = pred["predictions"]["percent"]["draw"]
+            away = pred["predictions"]["percent"]["away"]
+
+            over = pred["predictions"]["percent"]["over_2.5"]
+            btts = pred["predictions"]["percent"]["btts"]
+
+            valores = {
+                "Local": int(home.replace("%","")),
+                "Empate": int(draw.replace("%","")),
+                "Visitante": int(away.replace("%","")),
+                "Más de 2.5 goles": int(over.replace("%","")),
+                "Ambos marcan": int(btts.replace("%",""))
+            }
+
+            mejor_mercado = max(valores, key=valores.get)
+            prob = valores[mejor_mercado]
+
+            analisis.append({
+                "liga": p["league"]["name"],
+                "hora": p["fixture"]["date"][11:16],
+                "partido": f'{p["teams"]["home"]["name"]} vs {p["teams"]["away"]["name"]}',
+                "mercado": mejor_mercado,
+                "prob": prob
+            })
+
+        except:
+            continue
+
+    if not analisis:
+        return "No se pudieron calcular estadísticas."
+
+    # 🔥 TOP 3
+    top3 = sorted(analisis, key=lambda x: x["prob"], reverse=True)[:3]
+
+    texto = f"🔥 <b>TOP 3 MEJORES PRONÓSTICOS DEL DÍA</b>\n"
+    texto += f"🕒 Hora Colombia: {ahora}\n\n"
+
+    for i, a in enumerate(top3, 1):
+        texto += f"""
+{i}️⃣ <b>{a['liga']}</b>
+⚽ {a['partido']}
+⏰ {a['hora']}
+📊 {a['mercado']} → <b>{a['prob']}%</b>
+
+"""
+
+    return texto
 
 
-# =========================================
-# HANDLERS (NO TOCADOS)
-# =========================================
+# ======================================================
+# HANDLERS (NO TOCAR)
+# ======================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
@@ -114,9 +197,9 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================================
-# ARQUITECTURA (INTOCABLE Y ORIGINAL)
-# =========================================
+# ======================================================
+# ARQUITECTURA ESTABLE (NO TOCAR)
+# ======================================================
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -130,4 +213,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
