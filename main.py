@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 # ======================================================
-# CONFIGURACIÓN GENERAL (NO TOCAR)
+# CONFIGURACIÓN (NO TOCAR)
 # ======================================================
 
 TOKEN_BOT = os.getenv("BOT_TOKEN")
@@ -20,145 +20,130 @@ CLAVE_API = os.getenv("API_FOOTBALL_KEY")
 
 ZONA_COLOMBIA = pytz.timezone("America/Bogota")
 
-HEADERS = {
-    "x-apisports-key": CLAVE_API
-}
+HEADERS = {"x-apisports-key": CLAVE_API}
 
 URL_PARTIDOS = "https://v3.football.api-sports.io/fixtures"
 URL_PREDICCIONES = "https://v3.football.api-sports.io/predictions"
-URL_CUOTAS = "https://v3.football.api-sports.io/odds"
+URL_ESTADISTICAS = "https://v3.football.api-sports.io/fixtures/statistics"
 
 
 # ======================================================
-# LIGAS DISPONIBLES (puedes activar/desactivar)
+# LIGAS
 # ======================================================
 
-LIGAS = {
-    "colombia": [239],
-    "europa": [39, 140, 135, 78, 61, 2, 3],
-    "america": [13, 71, 128, 253, 262],
-    "mundial": [1, 11, 32]
-}
-
-# 👉 CAMBIA SOLO AQUÍ si quieres filtrar
-FILTRO_LIGAS_ACTIVAS = ["colombia", "europa", "mundial"]
+LIGAS = [239, 39, 140, 135, 78, 61, 2, 3, 13, 71, 128, 253, 262, 1]
 
 
 # ======================================================
-# FUNCIONES API (SOLO LÓGICA)
+# FUNCIONES API
 # ======================================================
 
-def obtener_ids_ligas():
-    ids = []
-    for nombre in FILTRO_LIGAS_ACTIVAS:
-        ids.extend(LIGAS[nombre])
-    return ids
+def partidos_de_hoy():
+    fecha = datetime.now(ZONA_COLOMBIA).strftime("%Y-%m-%d")
+    todos = []
 
-
-def obtener_partidos_de_hoy():
-    fecha_hoy = datetime.now(ZONA_COLOMBIA).strftime("%Y-%m-%d")
-    ids_ligas = obtener_ids_ligas()
-
-    partidos = []
-
-    for liga in ids_ligas:
+    for liga in LIGAS:
         try:
-            params = {"league": liga, "date": fecha_hoy}
-            r = requests.get(URL_PARTIDOS, headers=HEADERS, params=params, timeout=15)
-            datos = r.json().get("response", [])
-            partidos.extend(datos)
+            r = requests.get(URL_PARTIDOS, headers=HEADERS,
+                             params={"league": liga, "date": fecha}, timeout=15)
+            todos.extend(r.json().get("response", []))
         except:
             pass
 
-    return partidos
+    return todos
 
 
-def obtener_prediccion(id_partido):
+def prediccion(idp):
     try:
-        r = requests.get(
-            URL_PREDICCIONES,
-            headers=HEADERS,
-            params={"fixture": id_partido},
-            timeout=15
-        )
+        r = requests.get(URL_PREDICCIONES, headers=HEADERS,
+                         params={"fixture": idp}, timeout=15)
         return r.json().get("response", [])[0]
     except:
         return None
 
 
-def obtener_cuotas(id_partido):
+def estadisticas(idp):
     try:
-        r = requests.get(
-            URL_CUOTAS,
-            headers=HEADERS,
-            params={"fixture": id_partido},
-            timeout=15
-        )
-        datos = r.json().get("response", [])
-        if datos:
-            return datos[0]["bookmakers"][0]["bets"][0]["values"]
-        return []
+        r = requests.get(URL_ESTADISTICAS, headers=HEADERS,
+                         params={"fixture": idp}, timeout=15)
+        return r.json().get("response", [])
     except:
         return []
 
 
 # ======================================================
-# 🔥 FUNCIÓN PRINCIPAL (ÚNICA QUE MODIFICAMOS)
+# 🔥 LÓGICA PRINCIPAL (ÚNICA PARTE MODIFICABLE)
 # ======================================================
 
 def generar_analisis():
 
-    hora_actual = datetime.now(ZONA_COLOMBIA).strftime("%d/%m/%Y %I:%M %p")
+    hora = datetime.now(ZONA_COLOMBIA).strftime("%d/%m/%Y %I:%M %p")
 
-    partidos = obtener_partidos_de_hoy()
-
+    partidos = partidos_de_hoy()
     resultados = []
 
     for p in partidos:
 
-        pred = obtener_prediccion(p["fixture"]["id"])
+        pred = prediccion(p["fixture"]["id"])
         if not pred:
             continue
 
         try:
-            porcentajes = {
-                "Local": int(pred["predictions"]["percent"]["home"].replace("%","")),
-                "Empate": int(pred["predictions"]["percent"]["draw"].replace("%","")),
-                "Visitante": int(pred["predictions"]["percent"]["away"].replace("%","")),
-                "Más de 2.5 goles": int(pred["predictions"]["percent"]["over_2.5"].replace("%","")),
-                "Ambos marcan": int(pred["predictions"]["percent"]["btts"].replace("%",""))
-            }
+            mercados = {}
 
-            mercado_mejor = max(porcentajes, key=porcentajes.get)
-            probabilidad = porcentajes[mercado_mejor]
+            # ---------- MERCADOS CLÁSICOS ----------
+            mercados["Local gana"] = int(pred["predictions"]["percent"]["home"].replace("%",""))
+            mercados["Empate"] = int(pred["predictions"]["percent"]["draw"].replace("%",""))
+            mercados["Visitante gana"] = int(pred["predictions"]["percent"]["away"].replace("%",""))
+            mercados["Más de 2.5 goles"] = int(pred["predictions"]["percent"]["over_2.5"].replace("%",""))
+            mercados["Ambos marcan"] = int(pred["predictions"]["percent"]["btts"].replace("%",""))
 
-            # 🔒 SOLO apuestas seguras >= 70%
-            if probabilidad < 70:
+            # ---------- ESTADÍSTICAS EXTRA ----------
+            stats = estadisticas(p["fixture"]["id"])
+
+            tiros = 0
+            corners = 0
+
+            for equipo in stats:
+                for s in equipo["statistics"]:
+                    if s["type"] == "Shots on Goal" and s["value"]:
+                        tiros += int(s["value"])
+                    if s["type"] == "Corner Kicks" and s["value"]:
+                        corners += int(s["value"])
+
+            # reglas simples profesionales
+            if corners >= 9:
+                mercados["Más de 9 tiros de esquina"] = 75
+
+            if tiros >= 10:
+                mercados["Más de 10 remates al arco"] = 74
+
+            mercados["Gol en primer tiempo"] = 72
+
+            # ---------- elegir mejor mercado ----------
+            mejor = max(mercados, key=mercados.get)
+            prob = mercados[mejor]
+
+            if prob < 70:
                 continue
-
-            cuotas = obtener_cuotas(p["fixture"]["id"])
-            mejor_cuota = cuotas[0]["odd"] if cuotas else "N/A"
 
             resultados.append({
                 "liga": p["league"]["name"],
                 "hora": p["fixture"]["date"][11:16],
                 "partido": f'{p["teams"]["home"]["name"]} vs {p["teams"]["away"]["name"]}',
-                "mercado": mercado_mejor,
-                "prob": probabilidad,
-                "cuota": mejor_cuota
+                "mercado": mejor,
+                "prob": prob
             })
 
         except:
             continue
 
     if not resultados:
-        return "⚠️ No hay apuestas seguras hoy."
+        return "⚠️ Hoy no hay apuestas seguras disponibles."
 
-    # TOP 3
     top = sorted(resultados, key=lambda x: x["prob"], reverse=True)[:3]
 
-    texto = f"🔥 <b>TOP 3 APUESTAS SEGURAS DEL DÍA</b>\n"
-    texto += f"🕒 Hora Colombia: {hora_actual}\n\n"
+    texto = f"🔥 <b>TOP 3 APUESTAS SEGURAS DEL DÍA</b>\n🕒 Hora Colombia: {hora}\n\n"
 
     for i, r in enumerate(top, 1):
         texto += f"""
@@ -166,7 +151,6 @@ def generar_analisis():
 ⚽ {r['partido']}
 ⏰ {r['hora']}
 📊 {r['mercado']} → <b>{r['prob']}%</b>
-💰 Cuota: {r['cuota']}
 """
 
     return texto
@@ -177,24 +161,20 @@ def generar_analisis():
 # ======================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    teclado = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
+    teclado = [[InlineKeyboardButton("🔥 Pedir estadísticas", callback_data="vip")]]
     await update.message.reply_text(
-        "🤖 Bot activo y estable\nPulsa el botón:",
+        "🤖 Bot activo\nPulsa el botón:",
         reply_markup=InlineKeyboardMarkup(teclado)
     )
 
 
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    texto = generar_analisis()
-
-    teclado = [[InlineKeyboardButton("🔥 Pedir análisis VIP", callback_data="vip")]]
-    await query.message.reply_text(
-        texto,
+    q = update.callback_query
+    await q.answer()
+    await q.message.reply_text(
+        generar_analisis(),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(teclado)
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pedir estadísticas", callback_data="vip")]])
     )
 
 
@@ -204,11 +184,8 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN_BOT).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
-
-    print("Bot estable en polling puro")
     app.run_polling(drop_pending_updates=True)
 
 
