@@ -8,8 +8,12 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes
+)
 
 # ======================================================
 # CONFIGURACIÓN (NO TOCAR)
@@ -25,7 +29,6 @@ HEADERS = {"x-apisports-key": CLAVE_API}
 URL_PARTIDOS = "https://v3.football.api-sports.io/fixtures"
 URL_PREDICCIONES = "https://v3.football.api-sports.io/predictions"
 
-
 # ======================================================
 # LOGS
 # ======================================================
@@ -33,17 +36,15 @@ URL_PREDICCIONES = "https://v3.football.api-sports.io/predictions"
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-
 # ======================================================
 # CACHE + ANTI SPAM
 # ======================================================
 
 CACHE_ANALISIS = {"texto": None, "imagen": None, "timestamp": 0}
-CACHE_TIEMPO = 300
+CACHE_TIEMPO = 300  # 5 minutos
 
 ULTIMO_USO = {}
-COOLDOWN = 15
-
+COOLDOWN = 10  # segundos
 
 # ======================================================
 # LIGAS
@@ -51,12 +52,11 @@ COOLDOWN = 15
 
 LIGAS = [239, 39, 140, 135, 78, 61, 2, 3, 13, 71, 128, 253, 262, 1]
 
-
 # ======================================================
 # UTILIDADES IMAGEN
 # ======================================================
 
-def descargar_logo(url, size=(60, 60)):
+def descargar_logo(url, size):
     try:
         r = requests.get(url, timeout=10)
         img = Image.open(BytesIO(r.content)).convert("RGBA")
@@ -70,7 +70,7 @@ def crear_imagen_top5(top, hora):
     ancho = 1000
     alto = 170 + len(top) * 130
 
-    img = Image.new("RGB", (ancho, alto), (12, 35, 27))
+    img = Image.new("RGB", (ancho, alto), (12, 40, 30))
     draw = ImageDraw.Draw(img)
 
     try:
@@ -81,29 +81,29 @@ def crear_imagen_top5(top, hora):
     except:
         f_titulo = f_liga = f_texto = f_prob = ImageFont.load_default()
 
-    draw.text((40, 20), "TOP 5 APUESTAS SEGURAS DEL DÍA", font=f_titulo, fill="white")
+    draw.text((40, 20), "TOP 5 APUESTAS DEL DÍA (PRUEBA)", font=f_titulo, fill="white")
     draw.text((40, 90), f"Hora Colombia: {hora}", font=f_liga, fill="white")
 
-    colores = [(70,120,200), (30,90,160), (20,130,80), (150,80,20), (120,40,90)]
+    colores = [(70,120,200), (40,90,160), (20,130,80), (150,80,20), (120,40,90)]
 
     y = 150
 
     for i, r in enumerate(top):
 
-        card = Image.new("RGB", (ancho-60, 110), colores[i % len(colores)])
+        card = Image.new("RGB", (ancho - 60, 110), colores[i % len(colores)])
         img.paste(card, (30, y))
 
         liga_logo = descargar_logo(r["liga_logo"], (70, 70))
         home_logo = descargar_logo(r["home_logo"], (55, 55))
         away_logo = descargar_logo(r["away_logo"], (55, 55))
 
-        img.paste(liga_logo, (45, y+20))
-        img.paste(home_logo, (140, y+40))
-        img.paste(away_logo, (210, y+40))
+        img.paste(liga_logo, (45, y + 20))
+        img.paste(home_logo, (140, y + 40))
+        img.paste(away_logo, (210, y + 40))
 
-        draw.text((45, y-2), f"{r['liga']} • {r['pais']}", font=f_liga, fill="yellow")
-        draw.text((280, y+35), f"{r['partido']} | {r['mercado']}", font=f_texto, fill="white")
-        draw.text((850, y+30), f"{r['prob']}%", font=f_prob, fill="gold")
+        draw.text((45, y - 2), f"{r['liga']} • {r['pais']}", font=f_liga, fill="yellow")
+        draw.text((280, y + 35), f"{r['partido']} | {r['mercado']}", font=f_texto, fill="white")
+        draw.text((850, y + 30), f"{r['prob']}%", font=f_prob, fill="gold")
 
         y += 130
 
@@ -111,39 +111,44 @@ def crear_imagen_top5(top, hora):
     img.save(path)
     return path
 
-
 # ======================================================
 # API
 # ======================================================
 
 def partidos_de_hoy():
     fecha = datetime.now(ZONA_COLOMBIA).strftime("%Y-%m-%d")
-    todos = []
+    partidos = []
 
     for liga in LIGAS:
         try:
-            r = requests.get(URL_PARTIDOS, headers=HEADERS,
-                             params={"league": liga, "date": fecha}, timeout=15)
-
+            r = requests.get(
+                URL_PARTIDOS,
+                headers=HEADERS,
+                params={"league": liga, "date": fecha},
+                timeout=15
+            )
             if r.status_code == 200:
-                todos.extend(r.json().get("response", []))
+                partidos.extend(r.json().get("response", []))
         except:
             pass
 
-    return todos
+    return partidos
 
 
 def prediccion(fid):
     try:
-        r = requests.get(URL_PREDICCIONES, headers=HEADERS,
-                         params={"fixture": fid}, timeout=15)
+        r = requests.get(
+            URL_PREDICCIONES,
+            headers=HEADERS,
+            params={"fixture": fid},
+            timeout=15
+        )
         return r.json()["response"][0]
     except:
         return None
 
-
 # ======================================================
-# 🔥 LÓGICA PRINCIPAL
+# LÓGICA PRINCIPAL
 # ======================================================
 
 def generar_analisis():
@@ -164,13 +169,11 @@ def generar_analisis():
             continue
 
         porcentajes = pred["predictions"]["percent"]
+        mejor = max(porcentajes, key=lambda k: int(porcentajes[k].replace("%", "")))
+        prob = int(porcentajes[mejor].replace("%", ""))
 
-        mejor = max(porcentajes, key=lambda k: int(porcentajes[k].replace("%","")))
-        prob = int(porcentajes[mejor].replace("%",""))
-
-        # 🔥 MODO PRUEBA → SIEMPRE HABRÁ RESULTADOS
+        # 🔥 UMBRAL BAJO SOLO PARA PRUEBA
         if prob >= 30:
-
             resultados.append({
                 "liga": p["league"]["name"],
                 "pais": p["league"]["country"],
@@ -187,7 +190,7 @@ def generar_analisis():
 
     top = sorted(resultados, key=lambda x: x["prob"], reverse=True)[:5]
 
-    texto = "🔥 <b>TOP 5 APUESTAS DEL DÍA (modo prueba)</b>\n\n"
+    texto = "🔥 <b>TOP 5 APUESTAS DEL DÍA (MODO PRUEBA)</b>\n\n"
     for r in top:
         texto += f"{r['partido']} → {r['prob']}%\n"
 
@@ -201,14 +204,32 @@ def generar_analisis():
 
     return texto, imagen
 
-
 # ======================================================
-# HANDLERS (NO TOCAR)
+# HANDLERS
 # ======================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    teclado = [[InlineKeyboardButton("🔥 Pedir estadísticas", callback_data="vip")]]
-    await update.message.reply_text("🤖 Bot activo", reply_markup=InlineKeyboardMarkup(teclado))
+
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔥 Pedir estadísticas", callback_data="vip")]
+    ])
+
+    await update.message.reply_text(
+        "🤖 Bot activo\nGenerando estadísticas...",
+        reply_markup=teclado
+    )
+
+    texto, imagen = generar_analisis()
+
+    if imagen:
+        await update.message.reply_photo(
+            photo=open(imagen, "rb"),
+            caption=texto,
+            parse_mode="HTML",
+            reply_markup=teclado
+        )
+    else:
+        await update.message.reply_text(texto, reply_markup=teclado)
 
 
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,7 +241,6 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ahora = time.time()
 
     if user in ULTIMO_USO and ahora - ULTIMO_USO[user] < COOLDOWN:
-        await q.message.reply_text("⏳ Espera unos segundos...")
         return
 
     ULTIMO_USO[user] = ahora
@@ -241,5 +261,16 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await q.message.reply_text(texto, reply_markup=teclado)
 
+# ======================================================
+# MAIN
+# ======================================================
 
-# ===========================================
+def main():
+    app = Application.builder().token(TOKEN_BOT).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
