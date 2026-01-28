@@ -1,49 +1,161 @@
 import os
 import requests
-import time
-import logging
+import math
 from datetime import datetime
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-
-
-# ======================================================
-# CONFIGURACIÓN (NO TOCAR)
-# ======================================================
 
 TOKEN_BOT = os.getenv("BOT_TOKEN")
 TOKEN_FOOTBALL = os.getenv("FOOTBALL_DATA_TOKEN")
 
 BASE_URL = "https://api.football-data.org/v4"
-
-HEADERS = {
-    "X-Auth-Token": TOKEN_FOOTBALL
-}
+HEADERS = {"X-Auth-Token": TOKEN_FOOTBALL}
 
 
 # ======================================================
-# LOGS
+# POISSON
 # ======================================================
 
-logging.basicConfig(level=logging.INFO)
+def poisson(l, k):
+    return (l ** k * math.exp(-l)) / math.factorial(k)
+
+
+def probs(lh, la):
+    over = home = btts = 0
+
+    for i in range(6):
+        for j in range(6):
+            p = poisson(lh, i) * poisson(la, j)
+
+            if i + j > 2:
+                over += p
+            if i > j:
+                home += p
+            if i > 0 and j > 0:
+                btts += p
+
+    return over, home, btts
 
 
 # ======================================================
-# CACHE + ANTI SPAM (igual que tu estructura original)
+# HISTÓRICO
 # ======================================================
 
-CACHE_ANALISIS = {"texto": None, "imagen": None, "timestamp": 0}
-CACHE_TIEMPO = 300
+def stats(team_id):
+    r = requests.get(
+        f"{BASE_URL}/teams/{team_id}/matches?limit=15&status=FINISHED",
+        headers=HEADERS
+    )
 
-ULTIMO_USO = {}
-COOLDOWN = 10
+    if r.status_code != 200:
+        return 1.3, 1.3
+
+    matches = r.json()["matches"]
+
+    gf = gc = 0
+
+    for m in matches:
+        if m["homeTeam"]["id"] == team_id:
+            gf += m["score"]["fullTime"]["home"] or 0
+            gc += m["score"]["fullTime"]["away"] or 0
+        else:
+            gf += m["score"]["fullTime"]["away"] or 0
+            gc += m["score"]["fullTime"]["home"] or 0
+
+    n = len(matches) or 1
+
+    return gf/n, gc/n
 
 
 # ======================================================
-# TECLADO (SIEMPRE REAPARECE)
+# PARTIDOS PROGRAMADOS
+# ======================================================
+
+def partidos():
+
+    r = requests.get(
+        f"{BASE_URL}/matches?status=SCHEDULED",
+        headers=HEADERS
+    )
+
+    hoy = datetime.utcnow().date()
+
+    lista = []
+
+    for m in r.json()["matches"]:
+        fecha = datetime.fromisoformat(m["utcDate"].replace("Z", "")).date()
+
+        if abs((fecha - hoy).days) <= 2:
+            lista.append(m)
+
+    return lista[:5]
+
+
+# ======================================================
+# FORMATO PROFESIONAL
+# ======================================================
+
+def analizar():
+
+    resultados = []
+
+    for g in partidos():
+
+        home = g["homeTeam"]["name"]
+        away = g["awayTeam"]["name"]
+
+        hgf, hgc = stats(g["homeTeam"]["id"])
+        agf, agc = stats(g["awayTeam"]["id"])
+
+        lh = (hgf + agc) / 2
+        la = (agf + hgc) / 2
+
+        over, homep, btts = probs(lh, la)
+
+        opciones = {
+            "Over 2.5 goles": over,
+            "Ambos marcan (BTTS)": btts,
+            "Gana local": homep
+        }
+
+        mercado = max(opciones, key=opciones.get)
+        prob = opciones[mercado]
+
+        if prob < 0.60:
+            continue
+
+        hora = datetime.fromisoformat(g["utcDate"].replace("Z","")).strftime("%H:%M")
+
+        mensaje = f"""
+🔥 <b>ANÁLISIS VIP AVANZADO – FÚTBOL</b>
+
+🏆 <b>Partido:</b> {home} vs {away}
+🕒 <b>Hora:</b> {hora}
+
+📊 <b>ESCENARIO CON MAYOR PROBABILIDAD</b>
+👉 {mercado}
+
+📈 <b>Probabilidad matemática:</b> {round(prob*100)}%
+
+🧠 <b>Diagnóstico:</b>
+• Promedio goles local: {round(hgf,2)}
+• Promedio goles visita: {round(agf,2)}
+• Proyección goles esperados: {round(lh+la,2)}
+• Modelo Poisson + histórico reciente
+
+━━━━━━━━━━━━━━━━━━
+"""
+
+        resultados.append(mensaje)
+
+    if not resultados:
+        return "⚠️ No hay picks con valor estadístico fuerte hoy."
+
+    return "\n".join(resultados)
+
+
+# ======================================================
+# TELEGRAM
 # ======================================================
 
 def teclado():
@@ -52,138 +164,14 @@ def teclado():
     ])
 
 
-# ======================================================
-# IMAGEN SIMPLE (misma idea que tu bot)
-# ======================================================
-
-def crear_imagen_top5(top):
-
-    ancho = 900
-    alto = 120 + len(top) * 80
-
-    img = Image.new("RGB", (ancho, alto), (12, 40, 30))
-    draw = ImageDraw.Draw(img)
-
-    try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
-    except:
-        font = ImageFont.load_default()
-
-    y = 40
-
-    for r in top:
-        texto = f"{r}"
-        draw.text((40, y), texto, font=font, fill="white")
-        y += 70
-
-    path = "top5.png"
-    img.save(path)
-    return path
-
-
-# ======================================================
-# PARTIDOS REALES DESDE FOOTBALL-DATA
-# ======================================================
-
-def partidos_reales():
-
-    # MUCHÍSIMO MÁS CONFIABLE QUE FILTRAR POR FECHA
-    url = f"{BASE_URL}/matches?status=SCHEDULED"
-
-    r = requests.get(url, headers=HEADERS, timeout=20)
-
-    if r.status_code != 200:
-        return []
-
-    matches = r.json().get("matches", [])
-
-    hoy = datetime.utcnow().date()
-
-    partidos = []
-
-    for m in matches:
-        fecha = datetime.fromisoformat(
-            m["utcDate"].replace("Z", "")
-        ).date()
-
-        # hoy + próximos 2 días
-        if abs((fecha - hoy).days) <= 2:
-            home = m["homeTeam"]["name"]
-            away = m["awayTeam"]["name"]
-            partidos.append(f"{home} vs {away}")
-
-    return partidos
-
-
-# ======================================================
-# LÓGICA PRINCIPAL
-# ======================================================
-
-def generar_analisis():
-
-    ahora = time.time()
-
-    if CACHE_ANALISIS["texto"] and ahora - CACHE_ANALISIS["timestamp"] < CACHE_TIEMPO:
-        return CACHE_ANALISIS["texto"], CACHE_ANALISIS["imagen"]
-
-    partidos = partidos_reales()
-
-    if not partidos:
-        return "⚠️ No hay partidos próximos.", None
-
-    top = partidos[:5]
-
-    texto = "🔥 <b>PARTIDOS PROGRAMADOS (DATOS REALES)</b>\n\n"
-
-    for p in top:
-        texto += f"• {p}\n"
-
-    imagen = crear_imagen_top5(top)
-
-    CACHE_ANALISIS.update({
-        "texto": texto,
-        "imagen": imagen,
-        "timestamp": ahora
-    })
-
-    return texto, imagen
-
-
-# ======================================================
-# HANDLERS TELEGRAM
-# ======================================================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Bot activo",
-        reply_markup=teclado()
-    )
+    await update.message.reply_text("🤖 Bot activo", reply_markup=teclado())
 
 
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     q = update.callback_query
     await q.answer()
-
-    user = q.from_user.id
-    ahora = time.time()
-
-    if user in ULTIMO_USO and ahora - ULTIMO_USO[user] < COOLDOWN:
-        return
-
-    ULTIMO_USO[user] = ahora
-
-    texto, imagen = generar_analisis()
-
-    if imagen:
-        await q.message.reply_photo(
-            photo=open(imagen, "rb"),
-            caption=texto,
-            parse_mode="HTML",
-            reply_markup=teclado()
-        )
-    else:
-        await q.message.reply_text(texto, reply_markup=teclado())
+    await q.message.reply_text(analizar(), parse_mode="HTML", reply_markup=teclado())
 
 
 # ======================================================
@@ -191,16 +179,12 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 
 def main():
-
-    if not TOKEN_BOT or not TOKEN_FOOTBALL:
-        raise ValueError("Faltan BOT_TOKEN o FOOTBALL_DATA_TOKEN")
-
     app = Application.builder().token(TOKEN_BOT).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
 
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
 
 
 if __name__ == "__main__":
