@@ -2,6 +2,8 @@ import os
 import requests
 import math
 from datetime import datetime
+import pytz
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -10,6 +12,8 @@ TOKEN_FOOTBALL = os.getenv("FOOTBALL_DATA_TOKEN")
 
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": TOKEN_FOOTBALL}
+
+ZONA_COLOMBIA = pytz.timezone("America/Bogota")
 
 
 # ======================================================
@@ -20,7 +24,7 @@ def poisson(l, k):
     return (l ** k * math.exp(-l)) / math.factorial(k)
 
 
-def probs(lh, la):
+def probabilidades(lh, la):
     over = home = btts = 0
 
     for i in range(6):
@@ -63,23 +67,20 @@ def stats(team_id):
             gc += m["score"]["fullTime"]["home"] or 0
 
     n = len(matches) or 1
-
     return gf/n, gc/n
 
 
 # ======================================================
-# PARTIDOS PROGRAMADOS
+# PARTIDOS
 # ======================================================
 
 def partidos():
-
     r = requests.get(
         f"{BASE_URL}/matches?status=SCHEDULED",
         headers=HEADERS
     )
 
     hoy = datetime.utcnow().date()
-
     lista = []
 
     for m in r.json()["matches"]:
@@ -88,21 +89,28 @@ def partidos():
         if abs((fecha - hoy).days) <= 2:
             lista.append(m)
 
-    return lista[:5]
+    return lista[:6]
 
 
 # ======================================================
-# FORMATO PROFESIONAL
+# ANÁLISIS PROFESIONAL
 # ======================================================
 
 def analizar():
 
-    resultados = []
+    mensajes = []
 
     for g in partidos():
 
         home = g["homeTeam"]["name"]
         away = g["awayTeam"]["name"]
+        liga = g["competition"]["name"]
+
+        fecha_utc = datetime.fromisoformat(g["utcDate"].replace("Z", ""))
+        fecha_col = fecha_utc.replace(tzinfo=pytz.utc).astimezone(ZONA_COLOMBIA)
+
+        fecha_txt = fecha_col.strftime("%d/%m/%Y")
+        hora_txt = fecha_col.strftime("%I:%M %p")
 
         hgf, hgc = stats(g["homeTeam"]["id"])
         agf, agc = stats(g["awayTeam"]["id"])
@@ -110,7 +118,7 @@ def analizar():
         lh = (hgf + agc) / 2
         la = (agf + hgc) / 2
 
-        over, homep, btts = probs(lh, la)
+        over, homep, btts = probabilidades(lh, la)
 
         opciones = {
             "Over 2.5 goles": over,
@@ -121,37 +129,43 @@ def analizar():
         mercado = max(opciones, key=opciones.get)
         prob = opciones[mercado]
 
-        if prob < 0.60:
+        # 🔥 FILTRO PROFESIONAL (solo picks fuertes)
+        if prob < 0.65:
             continue
 
-        hora = datetime.fromisoformat(g["utcDate"].replace("Z","")).strftime("%H:%M")
+        xg_total = lh + la
+        rating = round(hgf - agf, 2)
 
         mensaje = f"""
 🔥 <b>ANÁLISIS VIP AVANZADO – FÚTBOL</b>
 
-🏆 <b>Partido:</b> {home} vs {away}
-🕒 <b>Hora:</b> {hora}
+🏆 <b>Torneo:</b> {liga}
+📅 <b>Fecha (COL):</b> {fecha_txt}
+🕒 <b>Hora (COL):</b> {hora_txt}
+
+⚽ <b>Partido:</b> {home} vs {away}
 
 📊 <b>ESCENARIO CON MAYOR PROBABILIDAD</b>
-👉 {mercado}
+👉 <b>{mercado}</b>
 
 📈 <b>Probabilidad matemática:</b> {round(prob*100)}%
+📈 <b>xG estimado total:</b> {round(xg_total,2)}
+📈 <b>Rating local-visita:</b> {rating}
 
-🧠 <b>Diagnóstico:</b>
-• Promedio goles local: {round(hgf,2)}
-• Promedio goles visita: {round(agf,2)}
-• Proyección goles esperados: {round(lh+la,2)}
+🧠 <b>Diagnóstico técnico:</b>
+• Prom goles local: {round(hgf,2)}
+• Prom goles visita: {round(agf,2)}
 • Modelo Poisson + histórico reciente
 
+💡 <b>Valor estadístico detectado (EV+)</b>
 ━━━━━━━━━━━━━━━━━━
 """
+        mensajes.append(mensaje)
 
-        resultados.append(mensaje)
+    if not mensajes:
+        return "⚠️ Hoy no hay picks con ventaja estadística real."
 
-    if not resultados:
-        return "⚠️ No hay picks con valor estadístico fuerte hoy."
-
-    return "\n".join(resultados)
+    return "\n".join(mensajes)
 
 
 # ======================================================
