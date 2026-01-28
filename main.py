@@ -1,8 +1,9 @@
 import os
 import requests
 import time
-import logging
+import math
 from datetime import datetime, timedelta
+from collections import defaultdict
 from PIL import Image, ImageDraw, ImageFont
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -10,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 
 # ======================================================
-# CONFIGURACIÓN
+# CONFIG
 # ======================================================
 
 TOKEN_BOT = os.getenv("BOT_TOKEN")
@@ -24,26 +25,25 @@ HEADERS = {
 
 
 # ======================================================
-# LOGS
-# ======================================================
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
-
-
-# ======================================================
-# CACHE + COOLDOWN
+# CACHE
 # ======================================================
 
 CACHE_ANALISIS = {"texto": None, "imagen": None, "timestamp": 0}
 CACHE_TIEMPO = 300
 
-ULTIMO_USO = {}
-COOLDOWN = 10
+
+# ======================================================
+# TECLADO
+# ======================================================
+
+def teclado():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔥 Pedir estadísticas", callback_data="vip")]
+    ])
 
 
 # ======================================================
-# IMAGEN SIMPLE
+# IMAGEN
 # ======================================================
 
 def crear_imagen_top5(top):
@@ -52,7 +52,7 @@ def crear_imagen_top5(top):
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
     except:
         font = ImageFont.load_default()
 
@@ -68,7 +68,7 @@ def crear_imagen_top5(top):
 
 
 # ======================================================
-# 🔥 FOOTBALL-DATA (ARREGLADO UTC ±1 DÍA)
+# PARTIDOS REALES (UTC ±1 día)
 # ======================================================
 
 def partidos_de_hoy():
@@ -82,38 +82,70 @@ def partidos_de_hoy():
     partidos = []
 
     for f in fechas:
-
         url = f"{BASE_URL}/matches?dateFrom={f}&dateTo={f}"
 
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=20)
-
-            if r.status_code == 200:
-                partidos.extend(r.json().get("matches", []))
-
-        except:
-            pass
+        r = requests.get(url, headers=HEADERS)
+        if r.status_code == 200:
+            partidos.extend(r.json().get("matches", []))
 
     return partidos
 
 
 # ======================================================
-# 🔥 MOTOR PREDICCIÓN LOCAL (SIN API PAGA)
+# HISTÓRICO REAL DEL EQUIPO
 # ======================================================
 
-import random
+def promedio_goles(team_id):
 
-def calcular_probabilidades():
+    url = f"{BASE_URL}/teams/{team_id}/matches?status=FINISHED&limit=10"
 
-    mercados = {
-        "Over 1.5": random.randint(60, 90),
-        "Over 2.5": random.randint(45, 80),
-        "Gol local": random.randint(55, 90),
-        "Ambos marcan": random.randint(50, 85)
-    }
+    r = requests.get(url, headers=HEADERS)
 
-    mejor = max(mercados, key=mercados.get)
-    return mejor, mercados[mejor]
+    if r.status_code != 200:
+        return 1.2, 1.2
+
+    matches = r.json().get("matches", [])
+
+    gf = 0
+    gc = 0
+
+    for m in matches:
+
+        if m["homeTeam"]["id"] == team_id:
+            gf += m["score"]["fullTime"]["home"]
+            gc += m["score"]["fullTime"]["away"]
+        else:
+            gf += m["score"]["fullTime"]["away"]
+            gc += m["score"]["fullTime"]["home"]
+
+    if not matches:
+        return 1.2, 1.2
+
+    return gf / len(matches), gc / len(matches)
+
+
+# ======================================================
+# 🔥 POISSON REAL
+# ======================================================
+
+def poisson(lmbda, k):
+    return (lmbda ** k * math.exp(-lmbda)) / math.factorial(k)
+
+
+def prob_over25(goles):
+    prob = sum(poisson(goles, i) for i in range(3))
+    return int((1 - prob) * 100)
+
+
+def prob_over15(goles):
+    prob = sum(poisson(goles, i) for i in range(2))
+    return int((1 - prob) * 100)
+
+
+def prob_ambos(l1, l2):
+    p1 = 1 - poisson(l1, 0)
+    p2 = 1 - poisson(l2, 0)
+    return int(p1 * p2 * 100)
 
 
 # ======================================================
@@ -134,20 +166,37 @@ def generar_analisis():
         home = m["homeTeam"]["name"]
         away = m["awayTeam"]["name"]
 
-        mercado, prob = calcular_probabilidades()
+        home_id = m["homeTeam"]["id"]
+        away_id = m["awayTeam"]["id"]
+
+        gf_h, gc_h = promedio_goles(home_id)
+        gf_a, gc_a = promedio_goles(away_id)
+
+        goles_local = (gf_h + gc_a) / 2
+        goles_visit = (gf_a + gc_h) / 2
+        total = goles_local + goles_visit
+
+        mercados = {
+            "Over 1.5": prob_over15(total),
+            "Over 2.5": prob_over25(total),
+            "Ambos marcan": prob_ambos(goles_local, goles_visit)
+        }
+
+        mejor = max(mercados, key=mercados.get)
 
         resultados.append({
             "partido": f"{home} vs {away}",
-            "mercado": mercado,
-            "prob": prob
+            "mercado": mejor,
+            "prob": mercados[mejor]
         })
 
     if not resultados:
-        return "⚠️ No hay partidos disponibles en este momento.", None
+        return "⚠️ No hay partidos hoy.", None
 
     top = sorted(resultados, key=lambda x: x["prob"], reverse=True)[:5]
 
-    texto = "🔥 <b>TOP 5 APUESTAS DEL DÍA (FREE)</b>\n\n"
+    texto = "🔥 <b>TOP 5 PROBABILIDADES REALES</b>\n\n"
+
     for r in top:
         texto += f"{r['partido']} → {r['mercado']} {r['prob']}%\n"
 
@@ -163,17 +212,7 @@ def generar_analisis():
 
 
 # ======================================================
-# TECLADO (SIEMPRE REAPARECE)
-# ======================================================
-
-def teclado():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔥 Pedir estadísticas", callback_data="vip")]
-    ])
-
-
-# ======================================================
-# HANDLERS
+# TELEGRAM
 # ======================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,23 +224,10 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    user = q.from_user.id
-    ahora = time.time()
-
-    if user in ULTIMO_USO and ahora - ULTIMO_USO[user] < COOLDOWN:
-        return
-
-    ULTIMO_USO[user] = ahora
-
     texto, imagen = generar_analisis()
 
     if imagen:
-        await q.message.reply_photo(
-            photo=open(imagen, "rb"),
-            caption=texto,
-            parse_mode="HTML",
-            reply_markup=teclado()
-        )
+        await q.message.reply_photo(photo=open(imagen, "rb"), caption=texto, parse_mode="HTML", reply_markup=teclado())
     else:
         await q.message.reply_text(texto, reply_markup=teclado())
 
@@ -212,18 +238,13 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
-    if not TOKEN_BOT or not TOKEN_FOOTBALL:
-        raise ValueError("Faltan variables de entorno")
-
     app = Application.builder().token(TOKEN_BOT).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
 
-    print("Bot corriendo...")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
