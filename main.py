@@ -1,10 +1,9 @@
 import os
 import requests
 import math
-import csv
-from datetime import datetime
+import time
 import pytz
-
+from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -12,187 +11,192 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 # CONFIG
 # ======================================================
 
-TOKEN_BOT = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_TOKEN = os.getenv("FOOTBALL_DATA_TOKEN")
 
 HEADERS = {"X-Auth-Token": API_TOKEN}
 
-ZONA_COLOMBIA = pytz.timezone("America/Bogota")
+BASE = "https://api.football-data.org/v4"
 
-URL_MATCHES = "https://api.football-data.org/v4/matches"
+ZONA = pytz.timezone("America/Bogota")
 
-# ======================================================
-# ELO BASE
-# ======================================================
+CACHE = {"data": None, "ts": 0}
+CACHE_TIME = 300
 
-ELO_BASE = 1500
-K = 20
-HOME_ADV = 80
-
-ratings = {}
-
-def get_elo(team):
-    return ratings.get(team, ELO_BASE)
-
-
-def update_elo(home, away, result):
-    ra = get_elo(home)
-    rb = get_elo(away)
-
-    ea = 1 / (1 + 10 ** ((rb - ra) / 400))
-
-    if result == "H":
-        sa = 1
-    elif result == "D":
-        sa = 0.5
-    else:
-        sa = 0
-
-    ra_new = ra + K * (sa - ea)
-    rb_new = rb + K * ((1 - sa) - (1 - ea))
-
-    ratings[home] = ra_new
-    ratings[away] = rb_new
-
+COOLDOWN = {}
 
 # ======================================================
-# CSV + ROI
+# LIGAS GRATIS DISPONIBLES (football-data free)
 # ======================================================
 
-CSV_FILE = "historial_apuestas.csv"
-
-def guardar_csv(row):
-    existe = os.path.exists(CSV_FILE)
-
-    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-
-        if not existe:
-            w.writerow(["fecha","partido","mercado","prob"])
-
-        w.writerow(row)
-
+COMPETITIONS = [
+    "PL",    # Premier
+    "CL",    # Champions
+    "PD",    # La Liga
+    "BL1",   # Bundesliga
+    "SA",    # Serie A
+    "FL1"    # Ligue 1
+]
 
 # ======================================================
-# POISSON
+# UTILIDADES MATEMÁTICAS
 # ======================================================
 
-def poisson(l, k):
-    return (math.exp(-l) * (l**k)) / math.factorial(k)
+def poisson(lmbda, k):
+    return (lmbda**k * math.exp(-lmbda)) / math.factorial(k)
 
 
-def over_prob(xg, line):
-    p = 0
-    for i in range(int(line)+1):
-        p += poisson(xg, i)
-    return 1 - p
+def prob_over25(lmbda):
+    total = 0
+    for i in range(3):
+        total += poisson(lmbda, i)
+    return 1 - total
 
 
-def btts_prob(xg_h, xg_a):
-    return 1 - (poisson(xg_h,0) + poisson(xg_a,0) - poisson(xg_h,0)*poisson(xg_a,0))
+def prob_btts(l1, l2):
+    p_no_home = poisson(l1, 0)
+    p_no_away = poisson(l2, 0)
+    return 1 - (p_no_home + p_no_away - (p_no_home * p_no_away))
 
 
 # ======================================================
 # API
 # ======================================================
 
-def partidos_de_hoy():
+def partidos_hoy():
+    hoy = datetime.now(ZONA).strftime("%Y-%m-%d")
+    partidos = []
 
-    fecha = datetime.now(ZONA_COLOMBIA).strftime("%Y-%m-%d")
+    for c in COMPETITIONS:
+        try:
+            r = requests.get(
+                f"{BASE}/competitions/{c}/matches",
+                headers=HEADERS,
+                params={"dateFrom": hoy, "dateTo": hoy}
+            )
+            partidos += r.json().get("matches", [])
+        except:
+            pass
 
-    r = requests.get(
-        URL_MATCHES,
-        headers=HEADERS,
-        params={"dateFrom": fecha, "dateTo": fecha},
-        timeout=20
-    )
-
-    return r.json().get("matches", [])
+    return partidos
 
 
-# ======================================================
-# MODELO PROFESIONAL
-# ======================================================
+def historial(team_id):
 
-def analizar_partido(m):
+    try:
+        r = requests.get(
+            f"{BASE}/teams/{team_id}/matches",
+            headers=HEADERS,
+            params={"limit": 10, "status": "FINISHED"}
+        )
 
-    home = m["homeTeam"]["name"]
-    away = m["awayTeam"]["name"]
-    comp = m["competition"]["name"]
+        matches = r.json().get("matches", [])
 
-    utc = datetime.fromisoformat(m["utcDate"].replace("Z","+00:00"))
-    local = utc.astimezone(ZONA_COLOMBIA)
+        gf = 0
+        gc = 0
 
-    fecha = local.strftime("%d/%m/%Y")
-    hora = local.strftime("%I:%M %p")
+        for m in matches:
+            if m["homeTeam"]["id"] == team_id:
+                gf += m["score"]["fullTime"]["home"]
+                gc += m["score"]["fullTime"]["away"]
+            else:
+                gf += m["score"]["fullTime"]["away"]
+                gc += m["score"]["fullTime"]["home"]
 
-    elo_h = get_elo(home) + HOME_ADV
-    elo_a = get_elo(away)
+        if len(matches) == 0:
+            return 1.2, 1.2
 
-    diff = elo_h - elo_a
+        return gf/len(matches), gc/len(matches)
 
-    xg_home = 1.4 + diff/400
-    xg_away = 1.1 - diff/400
-
-    xg_total = xg_home + xg_away
-
-    p_home = 1/(1+10**(-diff/400))
-    p_away = 1 - p_home
-    p_draw = 0.25
-
-    over15 = over_prob(xg_total,1)
-    over25 = over_prob(xg_total,2)
-    over35 = over_prob(xg_total,3)
-    btts = btts_prob(xg_home,xg_away)
-
-    mercados = {
-        "Local gana": p_home,
-        "Visitante gana": p_away,
-        "Empate": p_draw,
-        "Over 1.5": over15,
-        "Over 2.5": over25,
-        "Over 3.5": over35,
-        "Ambos marcan": btts
-    }
-
-    mejor = max(mercados, key=mercados.get)
-    prob = round(mercados[mejor]*100)
-
-    guardar_csv([fecha, f"{home} vs {away}", mejor, prob])
-
-    texto = f"""
-🔥 <b>ANÁLISIS CUANTITATIVO – FÚTBOL</b>
-
-🏆 {comp}
-⚽ {home} vs {away}
-📅 {fecha}
-🕒 {hora} (COL)
-
-📊 <b>Probabilidades reales:</b>
-• Local: {round(p_home*100)}%
-• Empate: {round(p_draw*100)}%
-• Visitante: {round(p_away*100)}%
-• Over2.5: {round(over25*100)}%
-• BTTS: {round(btts*100)}%
-
-🎯 <b>Mejor mercado:</b>
-👉 {mejor} ({prob}%)
-
-🧠 Modelo: Poisson + Elo
-"""
-
-    return texto
+    except:
+        return 1.2, 1.2
 
 
 # ======================================================
-# BOT
+# ELO SIMPLE
+# ======================================================
+
+ELO = {}
+
+def elo(team):
+    return ELO.get(team, 1500)
+
+
+def elo_prob(e1, e2):
+    return 1/(1+10**((e2-e1)/400))
+
+
+# ======================================================
+# MOTOR DE PREDICCIÓN
+# ======================================================
+
+def generar():
+
+    now = time.time()
+
+    if CACHE["data"] and now - CACHE["ts"] < CACHE_TIME:
+        return CACHE["data"]
+
+    texto = "🔥 <b>ANÁLISIS MATEMÁTICO DEL DÍA</b>\n\n"
+
+    partidos = partidos_hoy()
+
+    if not partidos:
+        return "⚠️ No hay partidos hoy.", None
+
+    for p in partidos[:5]:
+
+        home_id = p["homeTeam"]["id"]
+        away_id = p["awayTeam"]["id"]
+
+        gf_h, gc_h = historial(home_id)
+        gf_a, gc_a = historial(away_id)
+
+        lambda_home = (gf_h + gc_a)/2
+        lambda_away = (gf_a + gc_h)/2
+
+        total_lambda = lambda_home + lambda_away
+
+        over25 = prob_over25(total_lambda)
+        btts = prob_btts(lambda_home, lambda_away)
+
+        e1 = elo(home_id)
+        e2 = elo(away_id)
+        win_home = elo_prob(e1, e2)
+
+        mejor = max([
+            ("Over 2.5 goles", over25),
+            ("Ambos marcan", btts),
+            ("Gana local", win_home)
+        ], key=lambda x: x[1])
+
+        if mejor[1] < 0.60:
+            continue
+
+        hora = datetime.fromisoformat(p["utcDate"].replace("Z","+00:00")).astimezone(ZONA)
+
+        texto += (
+            f"🏆 {p['competition']['name']}\n"
+            f"⚽ {p['homeTeam']['name']} vs {p['awayTeam']['name']}\n"
+            f"🕒 {hora.strftime('%d/%m %H:%M')} COL\n"
+            f"🎯 {mejor[0]} → {int(mejor[1]*100)}%\n\n"
+        )
+
+    CACHE["data"] = (texto, None)
+    CACHE["ts"] = now
+
+    return texto, None
+
+
+# ======================================================
+# TELEGRAM
 # ======================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔥 Pedir estadísticas", callback_data="vip")]])
 
-    await update.message.reply_text("🤖 Bot activo", reply_markup=kb)
+    await update.message.reply_text("Bot activo", reply_markup=kb)
 
 
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,17 +204,18 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    partidos = partidos_de_hoy()
+    uid = q.from_user.id
+
+    if uid in COOLDOWN and time.time()-COOLDOWN[uid] < 5:
+        return
+
+    COOLDOWN[uid] = time.time()
+
+    texto, _ = generar()
 
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pedir estadísticas", callback_data="vip")]])
 
-    if not partidos:
-        await q.message.reply_text("⚠️ No hay partidos hoy", reply_markup=kb)
-        return
-
-    for m in partidos[:3]:
-        texto = analizar_partido(m)
-        await q.message.reply_text(texto, parse_mode="HTML", reply_markup=kb)
+    await q.message.reply_text(texto, parse_mode="HTML", reply_markup=kb)
 
 
 # ======================================================
@@ -218,11 +223,12 @@ async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 
 def main():
-    app = Application.builder().token(TOKEN_BOT).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(vip, pattern="vip"))
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
 
 
 if __name__ == "__main__":
     main()
+
